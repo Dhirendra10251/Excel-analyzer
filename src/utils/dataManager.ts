@@ -1,5 +1,5 @@
-import { CandidateEntity, ColumnDef, DataRow, SheetData, SubRecord } from '../types/spreadsheet';
-import { calculateSheetStats } from './excelParser';
+import { CandidateEntity, CaseStatus, ColumnDef, DataRow, SheetData, SubRecord } from '../types/spreadsheet';
+import { calculateSheetStats, classifyCaseStatus } from './excelParser';
 
 const STORAGE_KEY = 'sheetscout_active_session';
 
@@ -17,6 +17,8 @@ export function syncFlatRows(candidates: CandidateEntity[], columns: ColumnDef[]
   let rowCounter = 1;
 
   for (const cand of candidates) {
+    const parentCaseStatus: CaseStatus = cand.caseStatus || classifyCaseStatus(cand.workflowStatus);
+
     // If candidate has sub-records, each sub-record is a row with parent info
     if (cand.subRecords && cand.subRecords.length > 0) {
       cand.subRecords.forEach((sub, idx) => {
@@ -25,6 +27,7 @@ export function syncFlatRows(candidates: CandidateEntity[], columns: ColumnDef[]
           __rowNum: rowCounter,
           __parentCandidateId: cand.__id,
           __isSubRow: idx > 0,
+          caseStatus: parentCaseStatus,
         };
         for (const col of columns) {
           if (idx === 0) {
@@ -43,6 +46,7 @@ export function syncFlatRows(candidates: CandidateEntity[], columns: ColumnDef[]
         __rowNum: rowCounter,
         __parentCandidateId: cand.__id,
         __isSubRow: false,
+        caseStatus: parentCaseStatus,
       };
       for (const col of columns) {
         rowObj[col.key] = cand[col.key];
@@ -53,6 +57,65 @@ export function syncFlatRows(candidates: CandidateEntity[], columns: ColumnDef[]
   }
 
   return flatRows;
+}
+
+/**
+ * Transition case status between Pending, Transferred, Disposed, and record history
+ */
+export function changeCaseStatus(
+  sheet: SheetData,
+  candidateId: string,
+  newStatus: CaseStatus,
+  remarks?: string,
+  transferDetails?: string
+): SheetData {
+  const statusKey = sheet.stats.statusColumnKey || 'status';
+
+  const updatedCandidates = sheet.candidates.map((cand) => {
+    if (cand.__id !== candidateId) return cand;
+
+    const oldStatus = cand.caseStatus || classifyCaseStatus(cand.workflowStatus);
+    const historyItem = {
+      from: oldStatus,
+      to: newStatus,
+      date: new Date().toISOString(),
+      remarks: remarks?.trim() || undefined,
+    };
+
+    const editedFields = new Set(cand.editedFields || []);
+    editedFields.add(statusKey);
+    editedFields.add('caseStatus');
+    editedFields.add('workflowStatus');
+
+    const updatedSubs = (cand.subRecords || []).map((sub) => ({
+      ...sub,
+      status: newStatus,
+      [statusKey]: newStatus,
+    }));
+
+    return {
+      ...cand,
+      caseStatus: newStatus,
+      workflowStatus: newStatus,
+      [statusKey]: newStatus,
+      remarks: remarks !== undefined ? remarks : cand.remarks,
+      transferDetails: transferDetails !== undefined ? transferDetails : cand.transferDetails,
+      statusHistory: [...(cand.statusHistory || []), historyItem],
+      subRecords: updatedSubs,
+      isEdited: true,
+      editedFields,
+    };
+  });
+
+  const updatedRows = syncFlatRows(updatedCandidates, sheet.headers);
+  const updatedStats = calculateSheetStats(updatedRows, sheet.headers, updatedCandidates);
+
+  return {
+    ...sheet,
+    candidates: updatedCandidates,
+    rows: updatedRows,
+    stats: updatedStats,
+  };
 }
 
 /**
@@ -77,8 +140,10 @@ export function updateCandidateValue(
       editedFields,
     };
 
-    // If status column is being updated, also sync workflowStatus
-    if (fieldKey === sheet.stats.statusColumnKey || fieldKey === 'status' || fieldKey === 'workflowStatus') {
+    // If status column is being updated, also sync workflowStatus and caseStatus
+    if (fieldKey === sheet.stats.statusColumnKey || fieldKey === 'status' || fieldKey === 'workflowStatus' || fieldKey === 'caseStatus') {
+      const parsedStatus = classifyCaseStatus(String(newValue));
+      updated.caseStatus = parsedStatus;
       updated.workflowStatus = String(newValue);
     }
 
@@ -104,41 +169,8 @@ export function setCandidateStatus(
   candidateId: string,
   newStatus: string
 ): SheetData {
-  const statusKey = sheet.stats.statusColumnKey || 'status';
-
-  const updatedCandidates = sheet.candidates.map((cand) => {
-    if (cand.__id !== candidateId) return cand;
-
-    const editedFields = new Set(cand.editedFields || []);
-    editedFields.add(statusKey);
-    editedFields.add('workflowStatus');
-
-    // Also update all sub-records' status
-    const updatedSubs = cand.subRecords.map((sub) => ({
-      ...sub,
-      status: newStatus,
-      [statusKey]: newStatus,
-    }));
-
-    return {
-      ...cand,
-      workflowStatus: newStatus,
-      [statusKey]: newStatus,
-      subRecords: updatedSubs,
-      isEdited: true,
-      editedFields,
-    };
-  });
-
-  const updatedRows = syncFlatRows(updatedCandidates, sheet.headers);
-  const updatedStats = calculateSheetStats(updatedRows, sheet.headers, updatedCandidates);
-
-  return {
-    ...sheet,
-    candidates: updatedCandidates,
-    rows: updatedRows,
-    stats: updatedStats,
-  };
+  const caseStatus = classifyCaseStatus(newStatus);
+  return changeCaseStatus(sheet, candidateId, caseStatus);
 }
 
 /**
@@ -168,6 +200,7 @@ export function addNewCandidate(
     __id: newId,
     __sourceRowNums: [sheet.rows.length + 1],
     workflowStatus: defaultStatus,
+    caseStatus: classifyCaseStatus(defaultStatus),
     subRecords: [],
     isEdited: true,
     editedFields: new Set(['__created']),
@@ -311,7 +344,12 @@ export function removeSubRecord(
  */
 export function saveSessionToStorage(workbook: any): void {
   try {
-    const serialized = JSON.stringify(workbook);
+    const serialized = JSON.stringify(workbook, (_key, value) => {
+      if (value instanceof Set) {
+        return Array.from(value);
+      }
+      return value;
+    });
     localStorage.setItem(STORAGE_KEY, serialized);
   } catch {
     // quota exceeded or disabled
@@ -322,7 +360,34 @@ export function loadSessionFromStorage(): any | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    return JSON.parse(raw);
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.sheets) || data.sheets.length === 0) return null;
+
+    // Ensure all sheets have complete and up-to-date stats with case metrics and Set instances
+    for (const sheet of data.sheets) {
+      if (sheet) {
+        if (
+          !sheet.stats ||
+          sheet.stats.totalCases === undefined ||
+          sheet.stats.pendingCasesCount === undefined ||
+          sheet.stats.transferCasesCount === undefined ||
+          sheet.stats.disposedCasesCount === undefined
+        ) {
+          if (sheet.rows && sheet.headers) {
+            sheet.stats = calculateSheetStats(sheet.rows, sheet.headers, sheet.candidates || []);
+          }
+        }
+        // Ensure duplicateRowIds is an actual Set
+        if (sheet.stats) {
+          if (!(sheet.stats.duplicateRowIds instanceof Set)) {
+            sheet.stats.duplicateRowIds = new Set(
+              Array.isArray(sheet.stats.duplicateRowIds) ? sheet.stats.duplicateRowIds : []
+            );
+          }
+        }
+      }
+    }
+    return data;
   } catch {
     return null;
   }

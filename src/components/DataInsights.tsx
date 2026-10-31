@@ -65,7 +65,11 @@ export const DataInsights: React.FC<DataInsightsProps> = ({ sheet }) => {
     .sort((a, b) => a.percentage - b.percentage);
 
   // Duplicate candidate rows inspection list (if any)
-  const duplicateRows = rows.filter((r) => stats.duplicateRowIds.has(r.__id));
+  const duplicateRows = rows.filter((r) =>
+    stats.duplicateRowIds && typeof stats.duplicateRowIds.has === 'function'
+      ? stats.duplicateRowIds.has(r.__id)
+      : false
+  );
 
   return (
     <div className="space-y-6">

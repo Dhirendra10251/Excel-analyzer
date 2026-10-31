@@ -50,6 +50,7 @@ export const GroupingPreviewModal: React.FC<GroupingPreviewModalProps> = ({
       __id: `cand_separated_${Date.now()}`,
       __sourceRowNums: [sub.__sourceRowNum],
       workflowStatus: sub.status || parent.workflowStatus || 'Pending',
+      caseStatus: parent.caseStatus || 'Pending',
       subRecords: [],
       isEdited: true,
     };

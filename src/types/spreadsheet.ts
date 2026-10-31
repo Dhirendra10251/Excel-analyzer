@@ -35,13 +35,26 @@ export interface SubRecord {
   [key: string]: any;
 }
 
+export type CaseStatus = 'Pending' | 'Transferred' | 'Disposed' | 'Unclassified';
+
+export interface CaseStatusHistoryItem {
+  from: string;
+  to: string;
+  date: string;
+  remarks?: string;
+}
+
 export interface CandidateEntity {
   __id: string;
   __sourceRowNums: number[];
-  workflowStatus: string; // e.g., 'Pending', 'In Progress', 'Completed', 'Done', 'Verified', etc.
+  workflowStatus: string;
+  caseStatus: CaseStatus;
   subRecords: SubRecord[];
   isEdited?: boolean;
   editedFields?: Set<string>;
+  transferDetails?: string;
+  remarks?: string;
+  statusHistory?: CaseStatusHistoryItem[];
   [key: string]: any;
 }
 
@@ -50,12 +63,14 @@ export interface DataRow {
   __rowNum: number;
   __isSubRow?: boolean;
   __parentCandidateId?: string;
+  caseStatus?: CaseStatus;
   [key: string]: any;
 }
 
 export interface SheetStats {
   physicalRowsCount: number;
   totalRows: number; // Unique candidates/entities count
+  totalCases: number;
   totalColumns: number;
   totalSubRecordsCount: number;
   missingValuesCount: number;
@@ -64,6 +79,12 @@ export interface SheetStats {
   duplicateRowIds: Set<string>;
   uniqueCandidateColumn?: string;
   uniqueCandidatesCount: number;
+  // Four Primary Case Categories
+  pendingCasesCount: number;
+  transferCasesCount: number;
+  disposedCasesCount: number;
+  unclassifiedCasesCount: number;
+  // Backward compatibility
   pendingCount: number;
   completedCount: number;
   inProgressCount: number;
@@ -130,6 +151,14 @@ export interface SortState {
   direction: 'asc' | 'desc';
 }
 
-export type ActiveTab = 'overview' | 'explorer' | 'search' | 'columns' | 'insights';
+export type ActiveTab =
+  | 'overview'
+  | 'explorer'
+  | 'search'
+  | 'pending'
+  | 'transfer'
+  | 'disposed'
+  | 'columns'
+  | 'insights';
 
 export type ExportType = 'original' | 'updated' | 'filtered' | 'selected' | 'normalized';

@@ -24,6 +24,7 @@ import { DataExplorer } from './components/DataExplorer';
 import { CandidateSearch } from './components/CandidateSearch';
 import { ColumnInfoViewer } from './components/ColumnInfoViewer';
 import { DataInsights } from './components/DataInsights';
+import { CaseStatusPage } from './components/CaseStatusPage';
 import { CandidateProfileModal } from './components/CandidateProfileModal';
 import { HeaderConfigModal } from './components/HeaderConfigModal';
 import { GroupingPreviewModal } from './components/GroupingPreviewModal';
@@ -148,6 +149,7 @@ export default function App() {
           activeTab={activeTab}
           onTabChange={setActiveTab}
           recordCount={activeSheet?.candidates.length || 0}
+          stats={activeSheet?.stats}
         />
 
         {/* Dynamic Main Content Container */}
@@ -236,12 +238,48 @@ export default function App() {
                   />
                 )}
 
-                {/* 4. Column Information Tab */}
+                {/* 4. Pending Cases Dedicated Tab */}
+                {activeTab === 'pending' && (
+                  <CaseStatusPage
+                    statusType="Pending"
+                    sheet={activeSheet}
+                    workbookName={workbook.fileName}
+                    onSelectCandidate={(cand) => setSelectedCandidate(cand)}
+                    onUpdateSheet={handleUpdateSheet}
+                    onNavigateTab={setActiveTab}
+                  />
+                )}
+
+                {/* 5. Transfer Cases Dedicated Tab */}
+                {activeTab === 'transfer' && (
+                  <CaseStatusPage
+                    statusType="Transferred"
+                    sheet={activeSheet}
+                    workbookName={workbook.fileName}
+                    onSelectCandidate={(cand) => setSelectedCandidate(cand)}
+                    onUpdateSheet={handleUpdateSheet}
+                    onNavigateTab={setActiveTab}
+                  />
+                )}
+
+                {/* 6. Disposed Cases Dedicated Tab */}
+                {activeTab === 'disposed' && (
+                  <CaseStatusPage
+                    statusType="Disposed"
+                    sheet={activeSheet}
+                    workbookName={workbook.fileName}
+                    onSelectCandidate={(cand) => setSelectedCandidate(cand)}
+                    onUpdateSheet={handleUpdateSheet}
+                    onNavigateTab={setActiveTab}
+                  />
+                )}
+
+                {/* 7. Column Information Tab */}
                 {activeTab === 'columns' && (
                   <ColumnInfoViewer sheet={activeSheet} />
                 )}
 
-                {/* 5. Data Insights Tab */}
+                {/* 8. Data Insights Tab */}
                 {activeTab === 'insights' && (
                   <DataInsights sheet={activeSheet} />
                 )}

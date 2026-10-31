@@ -97,7 +97,7 @@ export function createAiuTableTennisWorkbook(): XLSX.WorkBook {
       'M.Com',
       '2021 University Bronze',
       '2023 National Semis',
-      'Medical Certificate Attached',
+      'Transferred to Sports Authority / Inter-Zone',
     ],
     [
       4,
@@ -208,6 +208,16 @@ export function createActionPointsWorkbook(): XLSX.WorkBook {
       1420000,
       'Bengaluru',
       'Completed',
+    ],
+    [
+      3,
+      'PAN-003',
+      'Person C',
+      'A',
+      'Audit Transfer: Escalated to Regional Appellate Authority',
+      875000,
+      'Chennai',
+      'Transferred',
     ],
   ];
 

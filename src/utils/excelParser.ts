@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx';
 import {
   CandidateEntity,
+  CaseStatus,
   ColumnDef,
   ColumnType,
   DataRow,
@@ -370,6 +371,51 @@ export function buildColumnDefinitions(
 }
 
 /**
+ * Classifies any status string into one of the four official case categories:
+ * 'Pending' | 'Transferred' | 'Disposed' | 'Unclassified'
+ */
+export function classifyCaseStatus(statusText: any): CaseStatus {
+  if (statusText === null || statusText === undefined || String(statusText).trim() === '') {
+    return 'Pending';
+  }
+  const s = String(statusText).toLowerCase().trim();
+
+  // 1. Transferred check
+  if (s.includes('transfer') || s.includes('forwarded') || s.includes('routed')) {
+    return 'Transferred';
+  }
+
+  // 2. Disposed / Closed / Completed check
+  if (
+    s.includes('disposed') ||
+    s.includes('done') ||
+    s.includes('completed') ||
+    s.includes('verified') ||
+    s.includes('approved') ||
+    s.includes('closed') ||
+    s.includes('resolved') ||
+    s.includes('settled') ||
+    s.includes('eligible')
+  ) {
+    return 'Disposed';
+  }
+
+  // 3. Pending / In Progress check
+  if (
+    s.includes('pending') ||
+    s.includes('open') ||
+    s.includes('awaiting') ||
+    s.includes('not verified') ||
+    s.includes('under review') ||
+    s.includes('in progress')
+  ) {
+    return 'Pending';
+  }
+
+  return 'Unclassified';
+}
+
+/**
  * Intelligent Hierarchical Grouping:
  * Recognizes that one candidate/entity can occupy multiple physical rows in an Excel spreadsheet.
  * Connects continuation rows with blank identities to the preceding parent record.
@@ -424,11 +470,9 @@ export function buildHierarchicalEntities(
     const isBlankRow = rawRow.every((val) => val === null || val === undefined || String(val).trim() === '');
     if (isBlankRow) continue;
 
-    // Check row values for each column
     const rowObj: Record<string, any> = {};
     for (const col of columns) {
       let val = rawRow[col.colIndex];
-      // Check if this cell is part of vertical merge
       const mergeKey = `${r},${col.colIndex}`;
       if ((val === null || val === undefined || String(val).trim() === '') && verticalMergeMap.has(mergeKey)) {
         val = verticalMergeMap.get(mergeKey);
@@ -444,27 +488,22 @@ export function buildHierarchicalEntities(
       rowObj[col.key] = val;
     }
 
-    // Check if this row has genuine new identity columns (not blank and not continuation of vertical merge)
     const hasNewIdentity = identityColKeys.some((k) => {
       const col = columns.find((c) => c.key === k);
       if (!col) return false;
       const rawVal = rawRow[col.colIndex];
-      // If raw cell is blank, it cannot be a new identity
       if (rawVal === null || rawVal === undefined || String(rawVal).trim() === '') {
         return false;
       }
-      // If cell is part of a vertical merge originating above this row, it is shared parent info
       return true;
     });
 
-    // Check if any identity column is explicitly continuing a vertical merge from above
     const isContinuingMerge = identityColKeys.some((k) => {
       const col = columns.find((c) => c.key === k);
       if (!col) return false;
       return verticalMergeMap.has(`${r},${col.colIndex}`);
     });
 
-    // Check if this row has sub-record detail columns
     const hasSubRecordDetails =
       subRecordColKeys.length > 0
         ? subRecordColKeys.some((k) => {
@@ -473,9 +512,6 @@ export function buildHierarchicalEntities(
           })
         : true;
 
-    // A row is a continuation if:
-    // 1. Grouping is enabled AND we already have a parent candidate, AND
-    // 2. Either the identity columns continue a vertical merge from above, OR they are raw blank while sub-records have data
     const isContinuation =
       groupingConfig.enabled &&
       currentCandidate !== null &&
@@ -483,7 +519,6 @@ export function buildHierarchicalEntities(
       hasSubRecordDetails;
 
     if (!isContinuation || !currentCandidate) {
-      // Create new Parent Candidate
       const candidateId = `cand_${candidates.length + 1}`;
       const statusCol = columns.find((c) => c.isStatusColumn);
       let initialStatus = 'Pending';
@@ -491,19 +526,36 @@ export function buildHierarchicalEntities(
       if (statusCol && rowObj[statusCol.key]) {
         initialStatus = String(rowObj[statusCol.key]);
       } else {
-        // Look for common status text
-        const possibleStatus = Object.values(rowObj).find((v) =>
-          typeof v === 'string' &&
-          ['pending', 'completed', 'done', 'in progress', 'verified', 'approved', 'eligible'].includes(v.toLowerCase())
+        const possibleStatus = Object.values(rowObj).find(
+          (v) => typeof v === 'string' && classifyCaseStatus(v) !== 'Unclassified'
         );
         if (possibleStatus) {
           initialStatus = String(possibleStatus);
         }
       }
 
-      // Check if sub-record data exists in this first row
+      let caseStatus = classifyCaseStatus(initialStatus);
+      if (caseStatus === 'Unclassified') {
+        for (const col of columns) {
+          const val = rowObj[col.key];
+          if (typeof val === 'string') {
+            const classified = classifyCaseStatus(val);
+            if (classified !== 'Unclassified') {
+              caseStatus = classified;
+              initialStatus = val;
+              break;
+            }
+          }
+        }
+      }
+      if (caseStatus === 'Unclassified') {
+        caseStatus = 'Pending';
+      }
+
       const subRecords: SubRecord[] = [];
-      const hasInitialSub = subRecordColKeys.some((k) => rowObj[k] !== null && rowObj[k] !== undefined && String(rowObj[k]).trim() !== '');
+      const hasInitialSub = subRecordColKeys.some(
+        (k) => rowObj[k] !== null && rowObj[k] !== undefined && String(rowObj[k]).trim() !== ''
+      );
       if (hasInitialSub || subRecordColKeys.length > 0) {
         const subObj: SubRecord = {
           __id: `${candidateId}_sub_1`,
@@ -522,24 +574,24 @@ export function buildHierarchicalEntities(
         __id: candidateId,
         __sourceRowNums: [r + 1],
         workflowStatus: initialStatus,
+        caseStatus,
         subRecords,
+        statusHistory: [],
         ...rowObj,
       };
       candidates.push(currentCandidate);
 
-      // Add to flat rows
       flatRows.push({
         __id: `row_${r + 1}`,
         __rowNum: r + 1,
         __parentCandidateId: candidateId,
         __isSubRow: false,
+        caseStatus,
         ...rowObj,
       });
     } else {
-      // Attach to preceding parent candidate
       currentCandidate.__sourceRowNums.push(r + 1);
 
-      // Create child sub-record
       const subIndex = currentCandidate.subRecords.length + 1;
       const subObj: SubRecord = {
         __id: `${currentCandidate.__id}_sub_${subIndex}`,
@@ -549,8 +601,12 @@ export function buildHierarchicalEntities(
 
       for (const col of columns) {
         subObj[col.key] = rowObj[col.key];
-        // If parent has empty cell but child row has value for a non-identity field, also enrich
-        if ((currentCandidate[col.key] === null || currentCandidate[col.key] === undefined || currentCandidate[col.key] === '') && !col.isIdentityColumn) {
+        if (
+          (currentCandidate[col.key] === null ||
+            currentCandidate[col.key] === undefined ||
+            currentCandidate[col.key] === '') &&
+          !col.isIdentityColumn
+        ) {
           if (rowObj[col.key] !== null && rowObj[col.key] !== undefined && rowObj[col.key] !== '') {
             currentCandidate[col.key] = rowObj[col.key];
           }
@@ -558,12 +614,12 @@ export function buildHierarchicalEntities(
       }
       currentCandidate.subRecords.push(subObj);
 
-      // Also append to flatRows with reference
       flatRows.push({
         __id: `row_${r + 1}`,
         __rowNum: r + 1,
         __parentCandidateId: currentCandidate.__id,
         __isSubRow: true,
+        caseStatus: currentCandidate.caseStatus,
         ...rowObj,
       });
     }
@@ -573,7 +629,7 @@ export function buildHierarchicalEntities(
 }
 
 /**
- * Calculate statistical indicators across the sheet
+ * Calculate statistical indicators across the sheet including the 4 case metrics
  */
 export function calculateSheetStats(
   rows: DataRow[],
@@ -582,6 +638,7 @@ export function calculateSheetStats(
 ): SheetStats {
   const physicalRowsCount = rows.length;
   const totalRows = candidates.length > 0 ? candidates.length : rows.length;
+  const totalCases = totalRows;
   const totalColumns = columns.length;
   let missingValuesCount = 0;
 
@@ -597,7 +654,6 @@ export function calculateSheetStats(
   const totalCells = rows.length * totalColumns;
   const missingValuesRate = totalCells > 0 ? Math.round((missingValuesCount / totalCells) * 1000) / 10 : 0;
 
-  // Possible duplicate detection
   const serialColKeys = columns
     .filter((c) => {
       const l = c.label.toLowerCase();
@@ -627,7 +683,6 @@ export function calculateSheetStats(
     }
   }
 
-  // Candidate column detection
   let candidateCol = columns.find((c) => {
     const l = c.label.toLowerCase();
     return (
@@ -648,31 +703,40 @@ export function calculateSheetStats(
   }
 
   const uniqueCandidatesKey = candidateCol?.key;
-  const uniqueCandidatesCount = candidates.length > 0 ? candidates.length : (candidateCol ? candidateCol.uniqueCount : totalRows);
+  const uniqueCandidatesCount =
+    candidates.length > 0 ? candidates.length : candidateCol ? candidateCol.uniqueCount : totalRows;
 
-  // Status statistics
-  const statusCol = columns.find((c) => c.isStatusColumn);
-  let pendingCount = 0;
-  let completedCount = 0;
-  let inProgressCount = 0;
+  // The 4 Case Management Metrics
+  let pendingCasesCount = 0;
+  let transferCasesCount = 0;
+  let disposedCasesCount = 0;
+  let unclassifiedCasesCount = 0;
 
-  const targetList = candidates.length > 0 ? candidates : rows;
-  for (const item of targetList) {
-    const st = String((item as any).workflowStatus || (statusCol ? item[statusCol.key] : '')).toLowerCase();
-    if (st.includes('pending') || st.includes('not verified')) {
-      pendingCount++;
-    } else if (st.includes('done') || st.includes('completed') || st.includes('verified') || st.includes('approved') || st.includes('eligible')) {
-      completedCount++;
-    } else if (st.includes('progress') || st.includes('review')) {
-      inProgressCount++;
+  if (candidates.length > 0) {
+    for (const c of candidates) {
+      const status = c.caseStatus || classifyCaseStatus(c.workflowStatus);
+      if (status === 'Pending') pendingCasesCount++;
+      else if (status === 'Transferred') transferCasesCount++;
+      else if (status === 'Disposed') disposedCasesCount++;
+      else unclassifiedCasesCount++;
+    }
+  } else {
+    for (const r of rows) {
+      const status = (r as any).caseStatus || classifyCaseStatus((r as any).workflowStatus);
+      if (status === 'Pending') pendingCasesCount++;
+      else if (status === 'Transferred') transferCasesCount++;
+      else if (status === 'Disposed') disposedCasesCount++;
+      else unclassifiedCasesCount++;
     }
   }
 
+  const statusCol = columns.find((c) => c.isStatusColumn);
   const totalSubRecordsCount = candidates.reduce((acc, c) => acc + (c.subRecords?.length || 0), 0);
 
   return {
     physicalRowsCount,
     totalRows,
+    totalCases,
     totalColumns,
     totalSubRecordsCount,
     missingValuesCount,
@@ -681,12 +745,17 @@ export function calculateSheetStats(
     duplicateRowIds,
     uniqueCandidateColumn: uniqueCandidatesKey,
     uniqueCandidatesCount,
-    pendingCount,
-    completedCount,
-    inProgressCount,
+    pendingCasesCount,
+    transferCasesCount,
+    disposedCasesCount,
+    unclassifiedCasesCount,
+    pendingCount: pendingCasesCount,
+    completedCount: disposedCasesCount,
+    inProgressCount: transferCasesCount,
     statusColumnKey: statusCol?.key,
   };
 }
+
 
 /**
  * Main parser entry point for SheetJS workbook
